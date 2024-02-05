@@ -1,0 +1,1 @@
+from .main_modal import endpoint as user_notification_settings_endpoint

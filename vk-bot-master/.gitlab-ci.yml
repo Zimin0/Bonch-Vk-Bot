@@ -1,0 +1,83 @@
+stages:
+  - test
+  - publish
+  - deploy
+
+variables:
+  TAG_LATEST: $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_NAME:latest
+  TAG_COMMIT: $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_NAME:$CI_COMMIT_SHORT_SHA
+  CONTAINER_NAME: $CI_PROJECT_PATH_SLUG-$CI_PROJECT_ID
+
+test:
+  image: python:3.9
+  stage: test
+  services:
+    - docker:dind
+  script:
+    - pip install pylint
+    - pylint ./app/*
+  only:
+    - merge_requests
+
+dev_publish:
+  image: docker:latest
+  stage: publish
+  services:
+    - docker:dind
+  script:
+    - docker build -t $TAG_COMMIT -t $TAG_LATEST .
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST
+  only:
+    - dev
+
+
+dev_deploy:
+  image: docker:latest
+  stage: deploy
+  services:
+    - docker:18.09.7
+  script:
+    - chmod og= $PROD_ID_RSA
+    - apk update && apk add openssh-client
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY"
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "mkdir -p env/$CI_PROJECT_ID"
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "touch env/$CI_PROJECT_ID/.env"
+    - scp -i $PROD_ID_RSA    $DEV_ENV                 $PROD_SERVER_USER@$PROD_SERVER_IP:/home/$PROD_SERVER_USER/env/$CI_PROJECT_ID/.env
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "docker pull $TAG_COMMIT"
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "docker container rm -f $CONTAINER_NAME || true"
+    - ssh -i $PROD_ID_RSA -o StrictHostKeyChecking=no $PROD_SERVER_USER@$PROD_SERVER_IP "docker run --restart always --env-file=env/$CI_PROJECT_ID/.env -d -p $DEV_PORT:5000 --name vk-bot-dev $TAG_COMMIT"
+  only:
+    - dev
+
+
+prod_publish:
+  image: docker:latest
+  stage: publish
+  services:
+    - docker:dind
+  script:
+    - docker build -t $TAG_COMMIT -t $TAG_LATEST .
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST
+  only:
+    - master
+
+prod_deploy:
+  image: docker:18.09.7
+  stage: deploy
+  services:
+    - docker:dind
+  tags:
+    - bonch-server
+  script:
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    - mkdir -p env/$CI_PROJECT_ID
+    - touch env/$CI_PROJECT_ID/.env
+    - docker pull $TAG_COMMIT
+    - docker container rm -f $CONTAINER_NAME || true
+    - docker run --restart always --env-file=$PROD_ENV -d --network host -p $PROD_PORT:5000 --name $CONTAINER_NAME $TAG_COMMIT
+  only:
+    - master
